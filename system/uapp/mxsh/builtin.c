@@ -5,12 +5,16 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#include <dirent.h>
+#include <errno.h>
 
 #include "mxsh.h"
 
@@ -226,19 +230,70 @@ static int mxc_mv(int argc, char** argv) {
     return 0;
 }
 
+static int mxc_rm_recursive(char* path) {
+    struct dirent* de;
+    DIR* dir;
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        dir = opendir(path);
+        if (!dir) {
+            return -1;
+        }
+        // remove children
+        size_t path_len = strlen(path);
+        while ((de = readdir(dir)) != NULL) {
+            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) {
+                continue;
+            }
+            int n = snprintf(path + path_len, PATH_MAX - path_len, "/%s", de->d_name);
+            if (n <= 0 || (size_t)n >= PATH_MAX - path_len) {
+                closedir(dir);
+                return -1;
+            }
+            if (mxc_rm_recursive(path) < 0) {
+                closedir(dir);
+                return -1;
+            }
+        }
+        path[path_len] = '\0';
+        closedir(dir);
+    }
+    if (unlink(path)) {
+        return -1;
+    } else {
+        return 0;
+    }
+}
+
+static char buf[PATH_MAX];
+
 static int mxc_rm(int argc, char** argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: rm <filename>\n");
+        fprintf(stderr, "usage: rm [-r] <filename>\n");
         return -1;
     }
+    bool recursive = false;
     while (argc > 1) {
+        if (!strcmp(argv[0], "-r")) {
+            recursive = true;
+        }
         argc--;
         argv++;
+    }
+    if (recursive) {
+        strncpy(buf, argv[0], sizeof(buf));
+        if (mxc_rm_recursive(buf)) {
+            goto err;
+        }
+    } else {
         if (unlink(argv[0])) {
-            fprintf(stderr, "error: failed to delete '%s'\n", argv[0]);
+            goto err;
         }
     }
     return 0;
+err:
+    fprintf(stderr, "error: failed to delete '%s'\n", argv[0]);
+    return -1;
 }
 
 typedef struct failure {

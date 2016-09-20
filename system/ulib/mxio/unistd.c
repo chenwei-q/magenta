@@ -161,7 +161,7 @@ static mx_status_t __mxio_open(mxio_t** io, mxio_t* at, const char* path, int fl
 
 // opens the directory containing path
 // returns the non-directory portion of the path as name on success
-static mx_status_t __mxio_opendir_containing(mxio_t** io, const char* path, const char** _name) {
+static mx_status_t __mxio_opendir_containing(mxio_t** io, mxio_t* at, const char* path, const char** _name) {
     char dirpath[1024];
     mx_status_t r;
 
@@ -171,7 +171,9 @@ static mx_status_t __mxio_opendir_containing(mxio_t** io, const char* path, cons
 
     mxio_t* iodir;
     mtx_lock(&mxio_lock);
-    if (path[0] == '/') {
+    if (at) {
+        iodir = at;
+    } else if (path[0] == '/') {
         path++;
         iodir = mxio_root_handle;
     } else {
@@ -458,8 +460,25 @@ ssize_t writev(int fd, const struct iovec* iov, int num) {
     return count;
 }
 
-int unlinkat(int fd, const char* path, int flag) {
-    return ERROR(ERR_NOT_SUPPORTED);
+int unlinkat(int dirfd, const char* path, int flags) {
+    mxio_t* at;
+    if (dirfd == AT_FDCWD) {
+        at = NULL;
+    } else {
+        if ((at = fd_to_io(dirfd)) == NULL) {
+            return ERRNO(EBADF);
+        }
+    }
+    const char* name;
+    mxio_t* io;
+    mx_status_t r;
+    if ((r = __mxio_opendir_containing(&io, at, path, &name)) < 0) {
+        return ERROR(r);
+    }
+    r = io->ops->misc(io, MXRIO_UNLINK, 0, (void*)name, strlen(name));
+    io->ops->close(io);
+    mxio_release(io);
+    return STATUS(r);
 }
 
 ssize_t read(int fd, void* buf, size_t count) {
@@ -651,7 +670,7 @@ int unlink(const char* path) {
     const char* name;
     mxio_t* io;
     mx_status_t r;
-    if ((r = __mxio_opendir_containing(&io, path, &name)) < 0) {
+    if ((r = __mxio_opendir_containing(&io, NULL, path, &name)) < 0) {
         return ERROR(r);
     }
     r = io->ops->misc(io, MXRIO_UNLINK, 0, (void*)name, strlen(name));
